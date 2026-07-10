@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask
 
 app = Flask(__name__)
+
 @app.route('/')
 def home():
     return "🔄 Auto-Collector is running! (Historical Bulk Mode)"
@@ -27,7 +28,6 @@ HEADERS = {
     'Origin': 'https://draw.ar-lottery01.com'
 }
 
-# ---------- FETCH WITH PAGE (BULK) ----------
 def fetch_page(game_url, page, limit=50):
     params = {
         'ts': int(time.time() * 1000),
@@ -45,15 +45,12 @@ def fetch_page(game_url, page, limit=50):
     return []
 
 def bulk_collect_history(game_name, game_url, target=50000):
-    """Parallel threads se 50k records collect karega"""
     print(f"\n🔥 Bulk Collect: {game_name}")
     all_records = []
     batch_size = 50
-    max_pages = 2000  # 2000 * 50 = 100k max (safety)
-    
+    max_pages = 2000
     with ThreadPoolExecutor(max_workers=20) as executor:
         futures = {executor.submit(fetch_page, game_url, p, batch_size): p for p in range(1, max_pages + 1)}
-        
         for future in as_completed(futures):
             if len(all_records) >= target:
                 break
@@ -64,8 +61,6 @@ def bulk_collect_history(game_name, game_url, target=50000):
                     print(f"   {game_name}: Page {futures[future]} | +{len(records)} (Total: {len(all_records)})")
             except:
                 pass
-    
-    # Save to master
     if all_records:
         df = pd.DataFrame(all_records)
         df['issueNumber'] = df['issueNumber'].astype(str)
@@ -74,7 +69,6 @@ def bulk_collect_history(game_name, game_url, target=50000):
         print(f"✅ {game_name}: {len(df)} records saved!")
     return all_records
 
-# ---------- SCHEDULED UPDATE (NEW RECORDS) ----------
 def fetch_latest(game_url, limit=100):
     params = {'ts': int(time.time()*1000), 'language': 'en', 'pageSize': limit}
     try:
@@ -90,16 +84,13 @@ def update_master(game_name):
     master_file = f'wingo_{game_name}_master.csv'
     if not os.path.exists(master_file):
         return
-    
     new_records = fetch_latest(GAMES[[g['name'] for g in GAMES].index(game_name)]['url'])
     if not new_records:
         return
-    
     df_new = pd.DataFrame(new_records)
     df_new['issueNumber'] = df_new['issueNumber'].astype(str)
     df_old = pd.read_csv(master_file)
     df_old['issueNumber'] = df_old['issueNumber'].astype(str)
-    
     combined = pd.concat([df_old, df_new]).drop_duplicates(subset=['issueNumber']).reset_index(drop=True)
     combined.to_csv(master_file, index=False)
     print(f"📊 {game_name} updated: {len(combined)} records")
@@ -112,21 +103,22 @@ def scheduled_updates():
                 update_master(game['name'])
                 time.sleep(2)
             print(f"⏳ Next update in 15 min...")
-            time.sleep(900)  # 15 minutes
+            time.sleep(900)
         except Exception as e:
             print(f"❌ Error: {e}")
             time.sleep(60)
 
-# ---------- MAIN ----------
-if __name__ == "__main__":
-    # Step 1: Bulk Collect History (Ek baar chalega)
+def run_collector():
     print("🚀 STARTING HISTORICAL BULK COLLECTION...")
     for game in GAMES:
         bulk_collect_history(game['name'], game['url'], target=50000)
-    
     print("\n✅ HISTORY COLLECTION COMPLETE!")
     print("🔄 Now starting scheduled updates (every 15 min)...")
-    
-    # Step 2: Keep Flask alive & Start scheduler
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080), daemon=True).start()
     scheduled_updates()
+
+if __name__ == "__main__":
+    # Start collector in background thread
+    collector_thread = threading.Thread(target=run_collector, daemon=True)
+    collector_thread.start()
+    # Run Flask in main thread to keep port open
+    app.run(host='0.0.0.0', port=8080)
